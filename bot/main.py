@@ -154,7 +154,7 @@ async def start_handler(client: Client, message: Message):
         f"I'm a **YouTube Uploader Bot**. I can help you upload videos "
         f"from **Google Drive** directly to **your own YouTube channel**.\n\n"
         f"🎁 **Free Trial:** You get {monetization.free_minutes} minutes free!\n\n"
-        f"💰 **Pricing:** ₹{monetization.cost_per_hour} per hour of usage\n\n"
+        f"💰 **Pricing:** Use /plans to view our premium options\n\n"
         f"📋 **How it works:**\n"
         f"1. Login with your Google account\n"
         f"2. Send me a Google Drive video link\n"
@@ -547,7 +547,7 @@ async def callback_handler(client: Client, callback: CallbackQuery):
 
     # ── Recharge ───────────────────────────────────────────────────
     elif data == "menu_recharge":
-        recharge_msg = monetization.get_recharge_options()
+        recharge_msg = monetization.get_recharge_options(user_id)
         await callback.message.edit_text(
             recharge_msg,
             reply_markup=InlineKeyboardMarkup([
@@ -1219,7 +1219,7 @@ async def balance_handler(client: Client, message: Message):
 async def recharge_handler(client: Client, message: Message):
     """Handle /recharge - Show recharge options."""
     user_id = message.from_user.id
-    recharge_msg = monetization.get_recharge_options()
+    recharge_msg = monetization.get_recharge_options(user_id)
     await message.reply_text(
         recharge_msg,
         reply_markup=InlineKeyboardMarkup([
