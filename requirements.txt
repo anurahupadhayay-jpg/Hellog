@@ -11,6 +11,11 @@ google-auth>=2.22.0
 # ── Async HTTP ───────────────────────────────────────────────────────────────
 aiohttp>=3.8.5
 aiofiles>=23.2.1
+requests>=2.31.0
+
+# ── Webhook & Server (For UPIGateway) ────────────────────────────────────────
+Flask>=3.0.0
+Werkzeug>=3.0.0
 
 # ── Database ─────────────────────────────────────────────────────────────────
 # SQLite3 is included in Python standard library
