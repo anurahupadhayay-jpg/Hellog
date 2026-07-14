@@ -21,8 +21,7 @@ PLANS = {
     "plan_2": {"name": "2 Days", "first_price": 10, "renew_price": 5, "first_hours": 48, "renew_hours": 48},
     "plan_3": {"name": "5 Days", "first_price": 15, "renew_price": 7, "first_hours": 120, "renew_hours": 120},
     "plan_4": {"name": "1 Month", "first_price": 50, "renew_price": 25, "first_hours": 720, "renew_hours": 720},
-    "plan_5": {"name": "1 Year", "first_price": 499, "renew_price": 499, "first_hours": 8760, "renew_hours": 8760},
-    "plan_6": {"name": "Lifetime", "first_price": 999, "renew_price": 999, "first_hours": 876000, "renew_hours": 876000}
+    "plan_5": {"name": "1 Year", "first_price": 499, "renew_price": 499, "first_hours": 8760, "renew_hours": 8760}
 }
 
 class Monetization:
@@ -93,7 +92,6 @@ class Monetization:
         total = balance["total_minutes"]
         used = balance["used_minutes"]
 
-        # Calculate percentage (Cap at 100% for visual sanity if lifetime is added)
         percentage = min((remaining / total * 100), 100) if total > 0 else 0
 
         # Status emoji
@@ -108,13 +106,9 @@ class Monetization:
         filled = int(percentage / 5)
         bar = "█" * filled + "░" * (20 - filled)
 
-        # Handle Lifetime display
-        if remaining >= 876000 * 60:
-            time_display = "Unlimited (Lifetime)"
-        else:
-            hours = int(remaining // 60)
-            minutes = int(remaining % 60)
-            time_display = f"{hours}h {minutes}m ({remaining:.1f} minutes)"
+        hours = int(remaining // 60)
+        minutes = int(remaining % 60)
+        time_display = f"{hours}h {minutes}m ({remaining:.1f} minutes)"
 
         return (
             f"{status} **Your Time Balance**\n\n"
@@ -130,9 +124,6 @@ class Monetization:
         Deduct time from user's balance.
         Returns True if successful, False if insufficient balance.
         """
-        # Do not deduct if user has Lifetime plan
-        if self.get_remaining_minutes(user_id) >= 876000 * 60:
-            return True
         return db.deduct_time(user_id, minutes)
 
     def add_time(self, user_id: int, minutes: float, amount_rupees: float = 0,
@@ -158,7 +149,7 @@ class Monetization:
 
         if success:
             new_balance = self.get_remaining_minutes(user_id)
-            time_added_str = "Unlimited (Lifetime)" if minutes >= 876000 * 60 else f"{minutes:.1f} minutes"
+            time_added_str = f"{minutes:.1f} minutes"
             
             return {
                 "success": True,
@@ -195,9 +186,7 @@ class Monetization:
             lines.append(f"🔹 **{plan['name']}**")
             lines.append(f"   💸 Price: ₹{price}")
             
-            if hours >= 876000:
-                lines.append(f"   ⏱ Time: Unlimited (Lifetime)\n")
-            elif hours >= 24:
+            if hours >= 24:
                 lines.append(f"   ⏱ Time: {int(hours/24)} Days\n")
             else:
                 lines.append(f"   ⏱ Time: {hours} Hours\n")
