@@ -1,40 +1,57 @@
 """
 Monetization & Timer System Module.
-Manages user time balances, recharges, and cost calculations.
-1 Rupee = 1 hour of usage time.
+Manages user time balances, tier-based recharges, and UPIGateway integration.
+Includes returning user discount logic.
 """
 
 import logging
 from typing import Dict, Any, Optional
 
 from bot.database import db
-from bot.config import COST_PER_HOUR, WARNING_THRESHOLD_MINUTES, DEFAULT_FREE_MINUTES
+from bot.config import WARNING_THRESHOLD_MINUTES, DEFAULT_FREE_MINUTES
 
 logger = logging.getLogger(__name__)
 
+# UPIGateway API Configuration
+UPIGATEWAY_API_KEY = "B7d72c62-39a9-4036-93ec-2c74e73b8e2c"
+
+# --- SUBSCRIPTION PLANS ---
+PLANS = {
+    "plan_1": {"name": "1 Hour", "first_price": 1, "renew_price": 1, "first_hours": 1, "renew_hours": 2},
+    "plan_2": {"name": "2 Days", "first_price": 10, "renew_price": 5, "first_hours": 48, "renew_hours": 48},
+    "plan_3": {"name": "5 Days", "first_price": 15, "renew_price": 7, "first_hours": 120, "renew_hours": 120},
+    "plan_4": {"name": "1 Month", "first_price": 50, "renew_price": 25, "first_hours": 720, "renew_hours": 720},
+    "plan_5": {"name": "1 Year", "first_price": 499, "renew_price": 499, "first_hours": 8760, "renew_hours": 8760},
+    "plan_6": {"name": "Lifetime", "first_price": 999, "renew_price": 999, "first_hours": 876000, "renew_hours": 876000}
+}
 
 class Monetization:
     """Handle monetization: time balances, recharges, and cost tracking."""
 
     def __init__(self):
-        self.cost_per_hour = COST_PER_HOUR
         self.warning_threshold = WARNING_THRESHOLD_MINUTES
         self.free_minutes = DEFAULT_FREE_MINUTES
 
-    def calculate_cost(self, minutes: float) -> float:
-        """
-        Calculate cost in Rupees for given minutes.
-        1 Rupee = 1 hour (60 minutes)
-        """
-        hours = minutes / 60
-        return round(hours * self.cost_per_hour, 2)
+    def is_returning_user(self, user_id: int) -> bool:
+        """Check if user has recharged before (Returning Customer)."""
+        balance = db.get_time_balance(user_id)
+        # If total_minutes used/acquired is more than default free minutes, they are an old user
+        return balance["total_minutes"] > self.free_minutes
 
-    def calculate_minutes(self, rupees: float) -> float:
+    def calculate_minutes(self, rupees: float, user_id: int = None) -> float:
         """
-        Calculate minutes for given Rupees.
-        1 Rupee = 60 minutes
+        Calculate minutes for given Rupees based on the user's plan tier.
         """
-        return round((rupees / self.cost_per_hour) * 60, 2)
+        if user_id:
+            is_old = self.is_returning_user(user_id)
+            for key, plan in PLANS.items():
+                price = plan["renew_price"] if is_old else plan["first_price"]
+                if price == rupees:
+                    hours = plan["renew_hours"] if is_old else plan["first_hours"]
+                    return float(hours * 60)
+        
+        # Fallback ratio if custom amount is sent outside the plans
+        return float(rupees * 60)
 
     def get_remaining_minutes(self, user_id: int) -> float:
         """Get user's remaining time in minutes."""
@@ -58,16 +75,14 @@ class Monetization:
                 f"⚠️ **Time Balance Depleted!**\n\n"
                 f"Your account has no remaining time.\n"
                 f"Please recharge to continue using the bot.\n\n"
-                f"💰 **Rate:** ₹{self.cost_per_hour} per hour\n"
-                f"Use /recharge to add time."
+                f"Use /plans to view our premium options."
             )
         elif remaining < self.warning_threshold:
             return (
                 f"⚠️ **Low Time Balance Warning**\n\n"
                 f"You have only **{remaining:.1f} minutes** remaining.\n"
                 f"Please consider recharging soon to avoid interruptions.\n\n"
-                f"💰 **Rate:** ₹{self.cost_per_hour} per hour\n"
-                f"Use /recharge to add more time."
+                f"Use /plans to view discount offers."
             )
         return ""
 
@@ -78,8 +93,8 @@ class Monetization:
         total = balance["total_minutes"]
         used = balance["used_minutes"]
 
-        # Calculate percentage
-        percentage = (remaining / total * 100) if total > 0 else 0
+        # Calculate percentage (Cap at 100% for visual sanity if lifetime is added)
+        percentage = min((remaining / total * 100), 100) if total > 0 else 0
 
         # Status emoji
         if remaining <= 0:
@@ -93,17 +108,21 @@ class Monetization:
         filled = int(percentage / 5)
         bar = "█" * filled + "░" * (20 - filled)
 
-        hours = int(remaining // 60)
-        minutes = int(remaining % 60)
+        # Handle Lifetime display
+        if remaining >= 876000 * 60:
+            time_display = "Unlimited (Lifetime)"
+        else:
+            hours = int(remaining // 60)
+            minutes = int(remaining % 60)
+            time_display = f"{hours}h {minutes}m ({remaining:.1f} minutes)"
 
         return (
             f"{status} **Your Time Balance**\n\n"
             f"[{bar}] {percentage:.1f}%\n\n"
-            f"⏱ **Remaining:** {hours}h {minutes}m ({remaining:.1f} minutes)\n"
+            f"⏱ **Remaining:** {time_display}\n"
             f"📊 **Total Purchased:** {total:.1f} minutes\n"
             f"📈 **Used:** {used:.1f} minutes\n\n"
-            f"💰 **Rate:** ₹{self.cost_per_hour} per hour\n"
-            f"Use /recharge to add more time."
+            f"Use /plans to add more time or upgrade."
         )
 
     def deduct_time(self, user_id: int, minutes: float) -> bool:
@@ -111,6 +130,9 @@ class Monetization:
         Deduct time from user's balance.
         Returns True if successful, False if insufficient balance.
         """
+        # Do not deduct if user has Lifetime plan
+        if self.get_remaining_minutes(user_id) >= 876000 * 60:
+            return True
         return db.deduct_time(user_id, minutes)
 
     def add_time(self, user_id: int, minutes: float, amount_rupees: float = 0,
@@ -119,21 +141,12 @@ class Monetization:
         return db.add_time(user_id, minutes, amount_rupees, payment_method, transaction_id)
 
     def recharge(self, user_id: int, rupees: float,
-                 payment_method: str = "manual",
+                 payment_method: str = "UPIGateway",
                  transaction_id: str = None) -> Dict[str, Any]:
         """
-        Process a recharge for a user.
-
-        Args:
-            user_id: Telegram user ID
-            rupees: Amount in Rupees
-            payment_method: Payment method used
-            transaction_id: Transaction reference
-
-        Returns:
-            Dict with recharge result
+        Process a recharge for a user with smart plan detection.
         """
-        minutes = self.calculate_minutes(rupees)
+        minutes = self.calculate_minutes(rupees, user_id)
 
         success = db.add_time(
             user_id=user_id,
@@ -145,6 +158,8 @@ class Monetization:
 
         if success:
             new_balance = self.get_remaining_minutes(user_id)
+            time_added_str = "Unlimited (Lifetime)" if minutes >= 876000 * 60 else f"{minutes:.1f} minutes"
+            
             return {
                 "success": True,
                 "rupees": rupees,
@@ -153,9 +168,9 @@ class Monetization:
                 "message": (
                     f"✅ **Recharge Successful!**\n\n"
                     f"💰 **Amount:** ₹{rupees}\n"
-                    f"⏱ **Time Added:** {minutes:.1f} minutes\n"
+                    f"⏱ **Time Added:** {time_added_str}\n"
                     f"💳 **Method:** {payment_method}\n"
-                    f"📊 **New Balance:** {new_balance:.1f} minutes"
+                    f"🎉 **Thank you for choosing our Premium Service!**"
                 )
             }
         else:
@@ -164,30 +179,33 @@ class Monetization:
                 "message": "❌ Recharge failed. Please try again or contact support."
             }
 
-    def get_recharge_options(self) -> str:
-        """Get formatted recharge options message."""
-        options = [
-            (10, self.calculate_minutes(10)),
-            (50, self.calculate_minutes(50)),
-            (100, self.calculate_minutes(100)),
-            (500, self.calculate_minutes(500)),
-        ]
+    def get_recharge_options(self, user_id: int = None) -> str:
+        """Get formatted recharge options message with smart pricing."""
+        is_old = self.is_returning_user(user_id) if user_id else False
+        
+        if is_old:
+            lines = ["🎉 **Special 50% Discount For You! (Returning User)**\n"]
+        else:
+            lines = ["💰 **Premium Plans (Upgrade Now)**\n"]
 
-        lines = [
-            "💰 **Recharge Options**\n",
-            f"**Rate:** ₹{self.cost_per_hour} = 60 minutes\n",
-            "Available plans:"
-        ]
-
-        for rupees, minutes in options:
-            hours = int(minutes // 60)
-            mins = int(minutes % 60)
-            lines.append(f"  • ₹{rupees} → {hours}h {mins}m")
+        for plan_id, plan in PLANS.items():
+            price = plan["renew_price"] if is_old else plan["first_price"]
+            hours = plan["renew_hours"] if is_old else plan["first_hours"]
+                
+            lines.append(f"🔹 **{plan['name']}**")
+            lines.append(f"   💸 Price: ₹{price}")
+            
+            if hours >= 876000:
+                lines.append(f"   ⏱ Time: Unlimited (Lifetime)\n")
+            elif hours >= 24:
+                lines.append(f"   ⏱ Time: {int(hours/24)} Days\n")
+            else:
+                lines.append(f"   ⏱ Time: {hours} Hours\n")
 
         lines.extend([
-            "\n📌 **How to recharge:**",
-            "Contact admin with /support command",
-            "or use /recharge [amount] for manual entry."
+            "📌 **How to recharge:**",
+            "Send the command `/buy [Amount]`",
+            "Example for Monthly Plan: `/buy 50` (or 25 if discounted)"
         ])
 
         return "\n".join(lines)
@@ -208,7 +226,6 @@ class Monetization:
             "failed_uploads": failed,
             "recent_history": history
         }
-
 
 # Global monetization instance
 monetization = Monetization()
