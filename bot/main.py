@@ -9,6 +9,8 @@ with monetization, queue management, and admin controls.
 import os
 import logging
 import asyncio
+import uuid
+import requests
 from pathlib import Path
 
 from pyrogram import Client, filters
@@ -78,7 +80,7 @@ def get_main_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """Get main menu keyboard."""
     buttons = [
         [InlineKeyboardButton("📤 Upload Video", callback_data="menu_upload")],
-        [InlineKeyboardButton("💰 Balance & Recharge", callback_data="menu_balance")],
+        [InlineKeyboardButton("💰 Balance & Plans", callback_data="menu_balance")],
         [InlineKeyboardButton("📊 My Stats", callback_data="menu_stats")],
         [InlineKeyboardButton("❓ Help", callback_data="menu_help")]
     ]
@@ -183,7 +185,7 @@ async def help_handler(client: Client, message: Message):
         "  `/upload` - Start upload wizard\n\n"
         "**Account:**\n"
         "  `/balance` - Check time balance\n"
-        "  `/recharge` - Recharge your account\n"
+        "  `/plans` - View and buy premium plans\n"
         "  `/history` - View upload history\n"
         "  `/stats` - Your statistics\n\n"
         "**Support:**\n"
@@ -435,9 +437,9 @@ async def handle_drive_link(client: Client, message: Message, drive_link: str):
         await message.reply_text(
             "⏰ **Time Balance Depleted**\n\n"
             "You don't have enough time balance to upload videos.\n"
-            "Please recharge your account.",
+            "Please recharge your account by using /plans.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💰 Recharge", callback_data="menu_recharge")]
+                [InlineKeyboardButton("💰 View Plans", callback_data="menu_recharge")]
             ])
         )
         return
@@ -503,9 +505,9 @@ async def photo_handler(client: Client, message: Message):
 
 # ── Callback Query Handlers ─────────────────────────────────────────────────
 
-@app.on_callback_query()
+@app.on_callback_query(~filters.regex(r"^buy_(\d+)$"))
 async def callback_handler(client: Client, callback: CallbackQuery):
-    """Handle inline button callbacks."""
+    """Handle general inline button callbacks."""
     user_id = callback.from_user.id
     data = callback.data
 
@@ -540,20 +542,26 @@ async def callback_handler(client: Client, callback: CallbackQuery):
         await callback.message.edit_text(
             balance_msg,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💰 Recharge", callback_data="menu_recharge")],
+                [InlineKeyboardButton("💰 Upgrade Plan", callback_data="menu_recharge")],
                 [InlineKeyboardButton("⬅️ Back", callback_data="menu_main")]
             ])
         )
 
-    # ── Recharge ───────────────────────────────────────────────────
+    # ── Recharge (Plans) ───────────────────────────────────────────
     elif data == "menu_recharge":
+        is_old = monetization.is_returning_user(user_id)
         recharge_msg = monetization.get_recharge_options(user_id)
+        
+        buttons = []
+        for plan_id, plan in monetization.PLANS.items():
+            price = plan["renew_price"] if is_old else plan["first_price"]
+            buttons.append([InlineKeyboardButton(f"🛒 Buy {plan['name']} - ₹{price}", callback_data=f"buy_{price}")])
+            
+        buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="menu_balance")])
+
         await callback.message.edit_text(
             recharge_msg,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 Contact Admin", url=f"tg://user?id={MAIN_ADMIN_ID}")],
-                [InlineKeyboardButton("⬅️ Back", callback_data="menu_balance")]
-            ])
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
 
     # ── Stats ──────────────────────────────────────────────────────
@@ -631,7 +639,7 @@ async def callback_handler(client: Client, callback: CallbackQuery):
             "  `/login` - Connect YouTube\n"
             "  `/logout` - Disconnect YouTube\n"
             "  `/balance` - Check time balance\n"
-            "  `/recharge` - Recharge account\n"
+            "  `/plans` - Upgrade account\n"
             "  `/history` - Upload history\n"
             "  `/stats` - Your statistics\n"
             "  `/support` - Contact support\n\n"
@@ -851,7 +859,7 @@ async def process_upload_confirmation(client: Client, callback: CallbackQuery):
             "You don't have enough time to upload.\n"
             "Please recharge your account.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💰 Recharge", callback_data="menu_recharge")]
+                [InlineKeyboardButton("💰 View Plans", callback_data="menu_recharge")]
             ])
         )
         return
@@ -1215,18 +1223,79 @@ async def balance_handler(client: Client, message: Message):
     await message.reply_text(balance_msg, reply_markup=get_main_keyboard(user_id))
 
 
-@app.on_message(filters.command("recharge"))
-async def recharge_handler(client: Client, message: Message):
-    """Handle /recharge - Show recharge options."""
+@app.on_message(filters.command(["plan", "plans"]))
+async def plan_handler(client: Client, message: Message):
+    """Handle /plan command - Show plans with direct buy buttons."""
     user_id = message.from_user.id
+    is_old = monetization.is_returning_user(user_id)
+    
+    # Get text from monetization
     recharge_msg = monetization.get_recharge_options(user_id)
+    
+    # Generate buttons dynamically
+    buttons = []
+    for plan_id, plan in monetization.PLANS.items():
+        price = plan["renew_price"] if is_old else plan["first_price"]
+        buttons.append([InlineKeyboardButton(f"🛒 Buy {plan['name']} - ₹{price}", callback_data=f"buy_{price}")])
+        
+    buttons.append([InlineKeyboardButton("⬅️ Main Menu", callback_data="menu_main")])
+    
     await message.reply_text(
         recharge_msg,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("💳 Contact Admin", url=f"tg://user?id={MAIN_ADMIN_ID}")],
-            [InlineKeyboardButton("⬅️ Back", callback_data="menu_main")]
-        ])
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
+
+
+@app.on_callback_query(filters.regex(r"^buy_(\d+)$"))
+async def buy_callback(client: Client, callback: CallbackQuery):
+    """Handle the Buy button clicks and generate UPIGateway Link."""
+    user_id = callback.from_user.id
+    amount = int(callback.matches[0].group(1))
+    await callback.answer()
+    
+    status_msg = await callback.message.edit_text("🔄 **Generating secure payment link...**")
+    
+    # Generate unique transaction ID
+    txn_id = f"TXN{user_id}{uuid.uuid4().hex[:6]}"
+    
+    # Needs bot username for redirect
+    me = await client.get_me()
+    
+    # UPIGateway API Details
+    payload = {
+        "key": "B7d72c62-39a9-4036-93ec-2c74e73b8e2c",  # Your API Key
+        "client_txn_id": txn_id,
+        "amount": str(amount),
+        "p_info": "YouTube Uploader Premium",
+        "customer_name": callback.from_user.first_name,
+        "customer_email": "premium@user.com",
+        "customer_mobile": "9999999999",
+        "redirect_url": f"https://t.me/{me.username}",
+        "udf1": str(user_id)  # Sending User ID so server knows who paid
+    }
+    
+    try:
+        response = requests.post("https://api.upigateway.com/api/create_order", json=payload)
+        data = response.json()
+        
+        if data.get("status") == True:
+            payment_url = data["data"]["payment_url"]
+            await status_msg.edit_text(
+                f"💳 **Complete Your Payment**\n\n"
+                f"💰 **Amount:** ₹{amount}\n"
+                f"🆔 **Order ID:** `{txn_id}`\n\n"
+                f"Click the button below to pay via GPay, PhonePe, or Paytm.\n"
+                f"⏳ *Your account will be upgraded automatically upon successful payment!*",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 Pay Now", url=payment_url)],
+                    [InlineKeyboardButton("⬅️ Back to Plans", callback_data="menu_recharge")]
+                ])
+            )
+        else:
+            await status_msg.edit_text("❌ Failed to generate payment link. Contact Admin.")
+    except Exception as e:
+        logger.error(f"Payment Link Error: {e}")
+        await status_msg.edit_text("❌ Server error. Please try again later.")
 
 
 @app.on_message(filters.command("history"))
